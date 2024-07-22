@@ -7,6 +7,9 @@
     "next.js",
     "react-internal.js"
   ],
+  "volta": {
+    "extends": "../../package.json"
+  },
   "devDependencies": {
     "@vercel/style-guide": "^5.2.0",
     "eslint-config-turbo": "^2.0.0",
