@@ -8,13 +8,13 @@
 
 フィーチャーフラグは、新機能のロールアウト、A/Bテスト、カナリアリリースなどを効率的に管理するために重要です。OpenFeatureは、フィーチャーフラグの標準化を目指すオープンソースプロジェクトであり、DevCycleはこの標準に準拠したフラグ管理サービスです。
 
-### 1.2 目的
+### 1.2 スコープ
 
 1. RemixアプリケーションでOpenFeatureとDevCycleを統合し、効率的なフラグ管理を実現する
 2. サーバーサイドとクライアントサイドの両方でフラグ評価を可能にする
 3. パフォーマンスとユーザーエクスペリエンスを最適化する
 
-### 1.3 非目的
+### 1.3 スコープ外
 
 1. DevCycle以外のフラグ管理サービスとの統合
 2. フラグ管理のUI実装（DevCycleのダッシュボードを使用）
@@ -27,6 +27,104 @@ RemixアプリケーションのSSRとCSRの特性を考慮し、以下のよう
 2. クライアントサイド：OpenFeature React SDKとDevCycle Web SDKを使用
 3. Remix loaderでの初期フラグ評価
 4. クライアントサイドでのフラグ再評価と動的更新
+
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Server
+    participant OpenFeature
+    participant DevCycle
+    participant Database
+
+    Server->>OpenFeature: SDKの初期化
+    Server->>DevCycle: プロバイダーの設定
+    Server->>Database: フラグ設定の取得
+    Database-->>Server: フラグ設定
+    Server->>OpenFeature: フラグの評価（サーバーサイド）
+    Server->>Client: 初期HTMLとフラグ値を送信
+
+    Client->>Client: Reactアプリのハイドレーション
+    Client->>OpenFeature: SDKの初期化（クライアントサイド）
+    Client->>DevCycle: プロバイダーの設定
+    Client->>OpenFeature: 初期フラグ値の設定
+
+    loop ユーザーインタラクション
+        Client->>OpenFeature: フラグの評価（クライアントサイド）
+        OpenFeature->>DevCycle: フラグ値の取得
+        DevCycle-->>OpenFeature: フラグ値
+        OpenFeature-->>Client: 評価結果
+        Client->>Client: UIの更新
+    end
+
+    Note over Client,DevCycle: リアルタイム更新
+    DevCycle->>OpenFeature: フラグ値の変更通知
+    OpenFeature->>Client: 新しいフラグ値
+    Client->>Client: UIの動的更新
+```
+
+### 2.1. 設計意図
+
+#### 2.1.1 サーバーサイドの初期化:
+
+
+```ts
+// app/lib/featureFlags/server.ts
+export const initializeServerFeatureFlags = async () => {
+  const devcycleClient = initializeDevCycle(env.DEVCYCLE_SERVER_SDK_KEY);
+  await OpenFeature.setProviderAndWait(await devcycleClient.getOpenFeatureProvider());
+  return OpenFeature.getClient();
+};
+
+export const openFeatureClient = await initializeServerFeatureFlags();
+```
+
+
+サーバーサイドでの初期化は、アプリケーションの起動時に一度だけ行われます。これにより、サーバーサイドのローダー関数内でフラグ評価を行うことができます。
+
+#### 2.1.2 クライアントサイドの初期化:
+
+
+```tsx
+// app/root.tsx
+  useEffect(() => {
+    const provider = new DevCycleProvider(ENV.DEVCYCLE_SDK_KEY_CLIENT);
+    OpenFeature.setProvider(provider);
+
+    // ユーザー情報をコンテキストとして設定
+    OpenFeature.setContext({
+      targetingKey: user.uid,
+      email: user.email,
+    });
+  }, [ENV.DEVCYCLE_SDK_KEY_CLIENT, user]);
+```
+
+
+クライアントサイドでの初期化は、アプリケーションがブラウザで読み込まれた後に行われます。これにより、クライアントサイドのコンポーネント内でフラグ評価を行うことができます。
+
+### 2.2. 設計の意図と仕組み:
+
+1. サーバーサイドレンダリング (SSR) のサポート:
+   - Remixはサーバーサイドレンダリングを行うため、初期ページロード時にサーバーサイドでフラグ評価を行う必要があります。
+   - これにより、初期HTMLにフラグの状態を反映させることができ、パフォーマンスとSEOが向上します。
+
+2. クライアントサイドでの動的更新:
+   - ブラウザでアプリケーションが動作している間、ユーザーのコンテキストや条件が変更される可能性があります。
+   - クライアントサイドの初期化により、これらの変更に応じてリアルタイムでフラグを再評価できます。
+
+3. 一貫性の確保:
+   - サーバーサイドとクライアントサイドで同じOpenFeatureプロバイダーを使用することで、フラグ評価の一貫性を確保します。
+   - これにより、サーバーサイドとクライアントサイドで異なる結果が返されるリスクを軽減します。
+
+4. コンテキストの管理:
+   - サーバーサイドでは、リクエストごとに異なるユーザーコンテキストを持つ可能性があります。
+   - クライアントサイドでは、アプリケーションのライフサイクル中にユーザーコンテキストが変更される可能性があります。
+   - 両方で初期化することで、それぞれの環境に適したコンテキスト管理が可能になります。
+
+5. パフォーマンスの最適化:
+   - サーバーサイドでの初期評価により、初期ページロードのパフォーマンスが向上します。
+   - クライアントサイドでの再初期化により、その後のインタラクションでのパフォーマンスが最適化されます。
+
 
 ## 3. 詳細設計
 
@@ -46,42 +144,57 @@ RemixアプリケーションのSSRとCSRの特性を考慮し、以下のよう
 だから、以下のように設計します：
 
 ```typescript
-// app/services/featureFlags/server.ts
-import { OpenFeature } from '@openfeature/server-sdk';
-import { initializeDevCycle } from '@devcycle/nodejs-server-sdk';
+// app/lib/featureFlags/server.ts
+import { OpenFeature } from '@openfeature/server-sdk'
+import { initializeDevCycle } from '@devcycle/nodejs-server-sdk'
 
-const devcycleClient = initializeDevCycle(process.env.DEVCYCLE_SERVER_SDK_KEY);
-await OpenFeature.setProviderAndWait(await devcycleClient.getOpenFeatureProvider());
+const devcycleClient = initializeDevCycle(process.env.DEVCYCLE_SERVER_SDK_KEY)
+await OpenFeature.setProviderAndWait(await devcycleClient.getOpenFeatureProvider())
 
-export const openFeatureClient = OpenFeature.getClient();
+export const openFeatureClient = OpenFeature.getClient()
 ```
 
 この設計により、サーバーサイドでOpenFeatureクライアントを初期化し、DevCycleプロバイダーを設定します。
 
-#### 3.1.2 フラグ評価関数
+
+### 3.1.2 フラグ評価の実装
+
+フラグ評価は、OpenFeatureクライアントを使用して直接行います。これにより、新しいvariantを追加する際にメソッドを追加する必要がなくなり、柔軟性が向上します。
 
 以下が公式仕様です：
-- OpenFeatureクライアントの`getBooleanValue()`、`getStringValue()`などのメソッドを使用してフラグを評価します。
-- コンテキストの設定には`setContext()`メソッドを使用します。
+- OpenFeature Node.js SDKの`getClient()`メソッドを使用してクライアントを取得します。
+- クライアントの`getBooleanValue()`, `getStringValue()`, `getNumberValue()`, `getObjectValue()`メソッドを使用して各型のフラグ値を取得します。
 
 参照：
-- [OpenFeature Evaluation API](https://openfeature.dev/docs/reference/concepts/evaluation-api)
+- [OpenFeature Node.js SDK - Evaluation API](https://openfeature.dev/docs/reference/technologies/server/javascript#evaluation-api)
 
 だから、以下のように設計します：
 
 ```typescript
-// app/services/featureFlags/server.ts
-export async function evaluateFlags(context: Record<string, unknown>) {
-  await openFeatureClient.setContext(context);
-  return {
-    newFeature: await openFeatureClient.getBooleanValue('new-feature', false),
-    featureVersion: await openFeatureClient.getStringValue('feature-version', '1.0'),
-    // 他のフラグも同様に評価
-  };
+// app/lib/featureFlags/server.ts
+import { OpenFeature } from '@openfeature/server-sdk'
+
+// OpenFeatureクライアントをエクスポート
+export const openFeatureClient = OpenFeature.getClient()
+```
+
+この設計により、アプリケーション内の必要な場所で直接OpenFeatureクライアントのメソッドを呼び出してフラグを評価できます。例えば：
+
+```typescript
+// app/routes/some-route.tsx
+import { openFeatureClient } from '~/lib/featureFlags/server'
+
+export const loader = async ({ request }) => {
+  const user = await getUser(request)
+  const context = { targetingKey: user.id }
+
+  const featureEnabled = await openFeatureClient.getBooleanValue('my-feature', false, context)
+  const variantName = await openFeatureClient.getStringValue('experiment', 'control', context)
+
+  // ローダーの残りの部分...
 }
 ```
 
-この設計により、サーバーサイドで柔軟にフラグを評価し、結果をオブジェクトとして返すことができます。
 
 ### 3.2 クライアントサイド実装
 
@@ -90,6 +203,7 @@ export async function evaluateFlags(context: Record<string, unknown>) {
 以下が公式仕様です：
 - OpenFeature React SDKは`@openfeature/react-sdk`パッケージを使用します。
 - DevCycle Web SDKは`@devcycle/openfeature-web-provider`パッケージを使用します。
+- `OpenFeature`で`setContext`でコンテキストを設定します。
 - `OpenFeatureProvider`コンポーネントを使用してプロバイダーを設定します。
 
 参照：
@@ -100,23 +214,45 @@ export async function evaluateFlags(context: Record<string, unknown>) {
 
 ```tsx
 // app/root.tsx
-import { OpenFeatureProvider } from '@openfeature/react-sdk';
-import DevCycleProvider from '@devcycle/openfeature-web-provider';
+import { OpenFeatureProvider } from '@openfeature/react-sdk'
+import DevCycleProvider from '@devcycle/openfeature-web-provider'
+import { OpenFeature } from '@openfeature/web-sdk'
+...
 
+export const loader = async ({ request }: LoaderFunctionArgs) => {
+  ...
+
+  return defer({
+    ...
+    user,
+    ENV: {
+      DEVCYCLE_CLIENT_SDK_KEY: process.env.DEVCYCLE_CLIENT_SDK_KEY,
+    },
+  })
+}
+...
 export default function App() {
-  const { ENV } = useLoaderData<typeof loader>();
+  const { user, ENV } = useLoaderData<typeof loader>()
+
+  useEffect(() => {
+    // ユーザー情報をコンテキストとして設定
+    OpenFeature.setContext({
+      user_id: user.tenantId,
+      email: user.email,
+    })
+  }, [ENV.DEVCYCLE_SDK_KEY_CLIENT, user])
 
   return (
-    <OpenFeatureProvider provider={new DevCycleProvider(ENV.DEVCYCLE_CLIENT_SDK_KEY)}>
+    <OpenFeatureProvider>
       {/* アプリケーションの残りの部分 */}
     </OpenFeatureProvider>
-  );
+  )
 }
 ```
 
 この設計により、クライアントサイドでOpenFeatureプロバイダーを設定し、アプリケーション全体でフラグ評価を可能にします。
 
-#### 3.2.2 React用フックの実装
+#### 3.2.2 React用フックの利用
 
 以下が公式仕様です：
 - OpenFeature React SDKは`useBooleanFlag`、`useStringFlag`などのフックを提供します。
@@ -127,104 +263,36 @@ export default function App() {
 
 だから、以下のように設計します：
 
-```typescript
-// app/hooks/useFeatureFlags.ts
+```tsx
+// app/routes/some-route.tsx
+import React from 'react';
 import { useBooleanFlag, useStringFlag } from '@openfeature/react-sdk';
 
-export function useNewFeature() {
-  return useBooleanFlag('new-feature', false);
-}
+export const FeatureFlagExample: React.FC = () => {
+  // ブール型のフラグを取得
+  const { value: isNewFeatureEnabled } = useBooleanFlag('new-feature', false);
 
-export function useFeatureVersion() {
-  return useStringFlag('feature-version', '1.0');
-}
+  // 文字列型のフラグを取得
+  const { value: buttonColor } = useStringFlag('button-color', 'blue');
+
+  return (
+    <div>
+      <h2>フィーチャーフラグの例</h2>
+      {isNewFeatureEnabled ? (
+        <p>新機能が有効です！</p>
+      ) : (
+        <p>新機能は現在無効です。</p>
+      )}
+      <button style={{ backgroundColor: buttonColor }}>
+        色が変わるボタン
+      </button>
+    </div>
+  );
+};
 ```
 
 この設計により、コンポーネント内で簡単にフラグを評価できるカスタムフックを提供します。
 
-### 3.3 Remix統合
-
-#### 3.3.1 root loaderの修正
-
-以下が公式仕様です：
-- Remixのloaderはサーバーサイドで実行され、データをクライアントに渡すことができます。
-- `defer()`関数を使用して、非同期データをストリーミングできます。
-
-参照：
-- [Remix Loader](https://remix.run/docs/en/main/route/loader)
-
-だから、以下のように設計します：
-
-```typescript
-// app/root.tsx
-import { defer } from '@remix-run/node';
-import { evaluateFlags } from '~/services/featureFlags/server';
-
-export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const user = await getUser(request);
-  const flagContext = {
-    targetingKey: user.id,
-    email: user.email,
-    // その他の関連コンテキスト
-  };
-
-  const initialFlags = await evaluateFlags(flagContext);
-
-  return defer({
-    initialFlags,
-    flagContext,
-    ENV: {
-      DEVCYCLE_CLIENT_SDK_KEY: process.env.DEVCYCLE_CLIENT_SDK_KEY,
-    },
-  });
-};
-```
-
-この設計により、サーバーサイドで初期フラグ評価を行い、結果をクライアントに渡すことができます。
-
-#### 3.3.2 クライアントサイドの初期化
-
-以下が公式仕様です：
-- OpenFeature React SDKの`useClient()`フックを使用してクライアントを取得できます。
-- `setContext()`メソッドを使用してコンテキストを設定できます。
-
-参照：
-- [OpenFeature React SDK Context](https://openfeature.dev/docs/reference/technologies/client/web/react#context)
-
-だから、以下のように設計します：
-
-```tsx
-// app/root.tsx
-import { useEffect } from 'react';
-import { useClient } from '@openfeature/react-sdk';
-
-function FlagInitializer() {
-  const { flagContext } = useLoaderData<typeof loader>();
-  const client = useClient();
-
-  useEffect(() => {
-    client.setContext(flagContext);
-  }, [client, flagContext]);
-
-  return null;
-}
-
-export default function App() {
-  const { initialFlags, ENV } = useLoaderData<typeof loader>();
-
-  return (
-    <OpenFeatureProvider
-      provider={new DevCycleProvider(ENV.DEVCYCLE_CLIENT_SDK_KEY)}
-      initialFlags={initialFlags}
-    >
-      <FlagInitializer />
-      {/* アプリケーションの残りの部分 */}
-    </OpenFeatureProvider>
-  );
-}
-```
-
-この設計により、クライアントサイドでフラグコンテキストを初期化し、サーバーサイドで評価された初期フラグ値を使用できます。
 
 ## 4. パフォーマンスとセキュリティ
 
